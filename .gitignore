@@ -1,0 +1,19 @@
+# Backend secrets: commit placeholders only.
+/supabase/**/.env
+/supabase/**/.env.*
+!/supabase/**/.env.example
+
+# Local Supabase CLI state and backend-only tooling/artifacts.
+/supabase/.temp/
+/supabase/.branches/
+/supabase/.tools/
+/supabase/test-results/
+
+AGENTS.md
+web/AGENTS.md
+HANDOFF_CONTEXT.md
+supabase/STATUS.md
+web/STATUS.md
+PRD.md
+REQUIREMENTS.md
+DRD.md

@@ -1,0 +1,6 @@
+# Supabase Project Configuration for OpenSourceMatch
+
+[functions.recommend]
+# The OpenSourceMatch API does not use user sessions or logins.
+# Public no-login invocation requires verify_jwt = false.
+verify_jwt = false

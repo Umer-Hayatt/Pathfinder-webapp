@@ -1,0 +1,9 @@
+{
+  "level": "intermediate",
+  "languages": ["TypeScript", "JavaScript"],
+  "skills": ["React", "Node.js", "Jest"],
+  "interests": ["web frameworks", "developer tools"],
+  "gitExperience": "comfortable",
+  "goal": "features",
+  "context": "Looking to contribute frontend component improvements and accessibility fixes."
+}

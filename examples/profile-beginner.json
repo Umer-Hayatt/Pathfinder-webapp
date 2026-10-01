@@ -1,0 +1,9 @@
+{
+  "level": "beginner",
+  "languages": ["Python"],
+  "skills": ["Git", "pytest"],
+  "interests": ["developer tools", "command line interfaces"],
+  "gitExperience": "basic",
+  "goal": "first_contribution",
+  "context": "I want to practice writing tests and type annotations."
+}

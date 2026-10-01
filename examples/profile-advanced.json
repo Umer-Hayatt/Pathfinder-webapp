@@ -1,0 +1,9 @@
+{
+  "level": "advanced",
+  "languages": ["Go", "Rust"],
+  "skills": ["Distributed systems", "Raft", "concurrency", "Docker"],
+  "interests": ["databases", "distributed storage", "networking"],
+  "gitExperience": "comfortable",
+  "goal": "bugs_tests",
+  "context": "Interested in distributed consensus, performance profiling, and network synchronization issues."
+}
