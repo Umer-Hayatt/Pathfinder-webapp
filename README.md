@@ -1,6 +1,5 @@
-# OpenSourceMatch
-
-OpenSourceMatch connects developers with open-source contribution opportunities tailored to their programming languages, experience level, and learning goals. It combines live repository and issue retrieval from the GitHub REST API with reasoning from Gemma (`gemma-4-26b-a4b-it`) via the Gemini API to explain project fit, highlight skill gaps, and provide actionable contribution roadmaps.
+# PathFinder
+PathFinder connects developers with open-source contribution opportunities tailored to their programming languages, experience level, and learning goals. It combines live repository and issue retrieval from the GitHub REST API with reasoning from Gemma (`gemma-4-26b-a4b-it`) via the Gemini API to explain project fit, highlight skill gaps, and provide actionable contribution roadmaps.
 
 ## Architecture
 
