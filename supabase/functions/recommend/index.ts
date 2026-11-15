@@ -326,7 +326,7 @@ export async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (err instanceof GemmaInferenceError) {
-      const status = err.code === "UPSTREAM_TIMEOUT" ? 504 : 502;
+      const status = err.code === "UPSTREAM_TIMEOUT" ? 504 : err.code === "RATE_LIMITED" ? 429 : 502;
       return createErrorResponse(
         status,
         err.code,

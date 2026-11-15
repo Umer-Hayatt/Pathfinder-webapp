@@ -10,11 +10,35 @@ import type {
   DifficultyLevel,
 } from "./types.ts";
 
+type GemmaErrorCode = "MODEL_ERROR" | "INVALID_MODEL_OUTPUT" | "UPSTREAM_TIMEOUT" | "RATE_LIMITED";
+
+const TRANSIENT_STATUSES = new Set([500, 502, 503, 504]);
+const TRANSIENT_RETRIES = 1;
+const TRANSIENT_RETRY_DELAY_MS = 1000;
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new GemmaInferenceError("Inference timed out.", "UPSTREAM_TIMEOUT", true));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new GemmaInferenceError("Inference timed out.", "UPSTREAM_TIMEOUT", true));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class GemmaInferenceError extends Error {
-  code: "MODEL_ERROR" | "INVALID_MODEL_OUTPUT" | "UPSTREAM_TIMEOUT";
+  code: GemmaErrorCode;
   retryable: boolean;
 
-  constructor(message: string, code: "MODEL_ERROR" | "INVALID_MODEL_OUTPUT" | "UPSTREAM_TIMEOUT", retryable: boolean) {
+  constructor(message: string, code: GemmaErrorCode, retryable: boolean) {
     super(message);
     this.name = "GemmaInferenceError";
     this.code = code;
@@ -128,44 +152,67 @@ async function executeGemmaRequest(
   prompt: string,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      signal,
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
+  const body = JSON.stringify({
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: `${systemInstructions}\n\n${prompt}` }],
       },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: `${systemInstructions}\n\n${prompt}` }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          // Up to 5 items × (800-char rationale + 6×300-char roadmap + skill lists) can exceed
-          // 2.5k tokens; a truncated reply is unparseable JSON.
-          maxOutputTokens: 8192,
-          thinkingConfig: { thinkingLevel: "minimal" },
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      // Up to 5 items × (800-char rationale + 6×300-char roadmap + skill lists) can exceed
+      // 2.5k tokens; a truncated reply is unparseable JSON.
+      maxOutputTokens: 8192,
+      thinkingConfig: { thinkingLevel: "minimal" },
+    },
+  });
+
+  let response: Response;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        signal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-      }),
-    });
-  } catch (err: any) {
-    if (signal?.aborted) {
-      throw new GemmaInferenceError("Inference timed out.", "UPSTREAM_TIMEOUT", true);
+        body,
+      });
+    } catch (err: any) {
+      if (signal?.aborted) {
+        throw new GemmaInferenceError("Inference timed out.", "UPSTREAM_TIMEOUT", true);
+      }
+      throw new GemmaInferenceError(`Gemma API network error: ${err?.message}`, "MODEL_ERROR", true);
     }
-    throw new GemmaInferenceError(`Gemma API network error: ${err?.message}`, "MODEL_ERROR", true);
+
+    // The Gemini API intermittently answers 500/503 ("Internal error encountered") for
+    // requests that succeed when repeated, so retry those once after a short pause.
+    if (TRANSIENT_STATUSES.has(response.status) && attempt < TRANSIENT_RETRIES) {
+      await response.body?.cancel();
+      await delay(TRANSIENT_RETRY_DELAY_MS, signal);
+      continue;
+    }
+    break;
   }
 
   if (!response.ok) {
-    const errorBody = await response.text();
+    const errorText = await response.text().catch(() => "");
+    let detail = errorText.slice(0, 200);
+    try {
+      const message = JSON.parse(errorText)?.error?.message;
+      if (typeof message === "string") detail = message.slice(0, 200);
+    } catch {
+      // keep the raw excerpt
+    }
+    if (response.status === 429) {
+      throw new GemmaInferenceError(`Gemma API quota or rate limit reached: ${detail}`, "RATE_LIMITED", true);
+    }
     throw new GemmaInferenceError(
-      `Gemma API returned HTTP ${response.status}: ${errorBody.slice(0, 200)}`,
+      `Gemma API returned HTTP ${response.status}: ${detail}`,
       "MODEL_ERROR",
-      response.status >= 500 || response.status === 429,
+      response.status >= 500,
     );
   }
 

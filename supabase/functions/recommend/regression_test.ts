@@ -295,3 +295,45 @@ Deno.test("B8b HTTP: unverifiable issueNumber drops that item and keeps the rest
     restore();
   }
 });
+
+// --- B10: one transient Gemini 500 should not fail the request ------------------------------
+Deno.test("B10 HTTP: a single transient Gemini 500 is retried", async () => {
+  withKey();
+  let geminiCalls = 0;
+  const restore = stubFetch((url) => {
+    if (url.hostname === "generativelanguage.googleapis.com") {
+      geminiCalls++;
+      return geminiCalls === 1
+        ? json({ error: { code: 500, message: "Internal error encountered.", status: "INTERNAL" } }, 500)
+        : gemini(JSON.stringify({ recommendations: [rec(1)] }));
+    }
+    if (url.pathname === "/search/repositories") return json({ items: [repo(1)] });
+    return json([issue(10)]);
+  });
+  try {
+    const res = await handleRequest(post(beginner));
+    await res.body?.cancel();
+    assertEquals([res.status, geminiCalls], [200, 2]);
+  } finally {
+    restore();
+  }
+});
+
+// --- B11: Gemini quota exhaustion reported as RATE_LIMITED/429, not MODEL_ERROR/502 ----------
+Deno.test("B11 HTTP: Gemini 429 returns 429 RATE_LIMITED", async () => {
+  withKey();
+  const restore = stubFetch((url) => {
+    if (url.hostname === "generativelanguage.googleapis.com") {
+      return json({ error: { code: 429, message: "Resource has been exhausted (e.g. check quota).", status: "RESOURCE_EXHAUSTED" } }, 429);
+    }
+    if (url.pathname === "/search/repositories") return json({ items: [repo(1)] });
+    return json([issue(10)]);
+  });
+  try {
+    const res = await handleRequest(post(beginner));
+    const body = await res.json();
+    assertEquals([res.status, body.error.code, body.error.retryable], [429, "RATE_LIMITED", true]);
+  } finally {
+    restore();
+  }
+});
