@@ -303,16 +303,26 @@ export async function handleRequest(req: Request): Promise<Response> {
       },
     });
   } catch (err: any) {
-    if (err instanceof GitHubApiError) {
-      const code: ApiErrorCode = err.statusCode === 429 || err.statusCode === 403 ? "RATE_LIMITED" : "GITHUB_ERROR";
+    // The total budget expiring is a timeout whichever upstream was in flight.
+    if (timeoutController.signal.aborted) {
       return createErrorResponse(
-        err.statusCode === 429 ? 429 : 502,
-        code,
-        err.message,
-        err.retryable,
+        504,
+        "UPSTREAM_TIMEOUT",
+        "Recommendation pipeline exceeded total 90-second execution budget.",
+        true,
         requestId,
         corsHeaders,
       );
+    }
+
+    if (err instanceof GitHubApiError) {
+      if (err.rateLimited) {
+        return createErrorResponse(429, "RATE_LIMITED", err.message, true, requestId, corsHeaders);
+      }
+      if (err.statusCode === 504) {
+        return createErrorResponse(504, "UPSTREAM_TIMEOUT", err.message, true, requestId, corsHeaders);
+      }
+      return createErrorResponse(502, "GITHUB_ERROR", err.message, err.retryable, requestId, corsHeaders);
     }
 
     if (err instanceof GemmaInferenceError) {
@@ -322,17 +332,6 @@ export async function handleRequest(req: Request): Promise<Response> {
         err.code,
         err.message,
         err.retryable,
-        requestId,
-        corsHeaders,
-      );
-    }
-
-    if (timeoutController.signal.aborted) {
-      return createErrorResponse(
-        504,
-        "UPSTREAM_TIMEOUT",
-        "Recommendation pipeline exceeded total 90-second execution budget.",
-        true,
         requestId,
         corsHeaders,
       );

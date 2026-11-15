@@ -5,7 +5,11 @@
 import { assertEquals, assertMatch } from "jsr:@std/assert@1";
 import { handleRequest } from "./index.ts";
 import { validateUserProfile } from "./validation.ts";
-import type { UserProfile, ApiErrorResponse, RecommendationResponse } from "./types.ts";
+import type { ApiErrorResponse, RecommendationResponse } from "./types.ts";
+
+// LIVE tests call GitHub and Gemini for real; they run only when a real key is configured.
+const liveKey = Deno.env.get("GEMINI_API_KEY")?.trim() ?? "";
+const skipLive = !liveKey || /^(replace_|your_|<)/i.test(liveKey);
 
 Deno.test("Validation: rejects empty object", () => {
   const result = validateUserProfile({});
@@ -144,7 +148,7 @@ Deno.test("HTTP: Invalid profile returns 400 INVALID_PROFILE", async () => {
   assertEquals(data.error.code, "INVALID_PROFILE");
 });
 
-Deno.test("HTTP LIVE: Beginner profile returns recommendations", async () => {
+Deno.test({ name: "HTTP LIVE: Beginner profile returns recommendations", ignore: skipLive }, async () => {
   const profileRaw = await Deno.readTextFile("examples/profile-beginner.json");
   const started = performance.now();
   const req = new Request("http://localhost:54321/functions/v1/recommend", {
@@ -177,7 +181,7 @@ Deno.test("HTTP LIVE: Beginner profile returns recommendations", async () => {
   }
 });
 
-Deno.test("HTTP LIVE: Intermediate profile returns recommendations", async () => {
+Deno.test({ name: "HTTP LIVE: Intermediate profile returns recommendations", ignore: skipLive }, async () => {
   const profileRaw = await Deno.readTextFile("examples/profile-intermediate.json");
   const started = performance.now();
   const req = new Request("http://localhost:54321/functions/v1/recommend", {
@@ -199,7 +203,7 @@ Deno.test("HTTP LIVE: Intermediate profile returns recommendations", async () =>
   assertEquals(Array.isArray(data.recommendations), true);
 });
 
-Deno.test("HTTP LIVE: Advanced profile returns recommendations", async () => {
+Deno.test({ name: "HTTP LIVE: Advanced profile returns recommendations", ignore: skipLive }, async () => {
   const profileRaw = await Deno.readTextFile("examples/profile-advanced.json");
   const started = performance.now();
   const req = new Request("http://localhost:54321/functions/v1/recommend", {
@@ -221,7 +225,7 @@ Deno.test("HTTP LIVE: Advanced profile returns recommendations", async () => {
   assertEquals(Array.isArray(data.recommendations), true);
 });
 
-Deno.test("HTTP LIVE: Zero results returns 200 with empty array", async () => {
+Deno.test({ name: "HTTP LIVE: Zero results returns 200 with empty array", ignore: skipLive }, async () => {
   const req = new Request("http://localhost:54321/functions/v1/recommend", {
     method: "POST",
     headers: {

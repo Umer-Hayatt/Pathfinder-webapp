@@ -84,9 +84,16 @@ ${JSON.stringify(candidatesContext, null, 2)}
 
 Provide up to 5 best recommendations as JSON.`;
 
-  // First inference attempt
-  let items = await executeGemmaRequest(endpoint, apiKey, systemInstructions, userPrompt, signal);
-  let validation = validateModelOutput(items, candidates);
+  // First inference attempt. Unparseable or empty output is treated like a schema failure so
+  // that it still gets the single repair attempt.
+  let validation: ValidationResult;
+  try {
+    const items = await executeGemmaRequest(endpoint, apiKey, systemInstructions, userPrompt, signal);
+    validation = validateModelOutput(items, candidates);
+  } catch (err) {
+    if (!(err instanceof GemmaInferenceError) || err.code !== "INVALID_MODEL_OUTPUT") throw err;
+    validation = { ok: false, error: err.message };
+  }
 
   if (validation.ok) {
     return validation.items;
@@ -100,8 +107,8 @@ ${validation.error}
 
 Please fix the output according to the schema rules and candidate IDs. Return valid JSON only.`;
 
-  items = await executeGemmaRequest(endpoint, apiKey, systemInstructions, repairPrompt, signal);
-  validation = validateModelOutput(items, candidates);
+  const repaired = await executeGemmaRequest(endpoint, apiKey, systemInstructions, repairPrompt, signal);
+  validation = validateModelOutput(repaired, candidates);
 
   if (!validation.ok) {
     throw new GemmaInferenceError(
@@ -139,7 +146,9 @@ async function executeGemmaRequest(
         ],
         generationConfig: {
           temperature: 0.2,
-          maxOutputTokens: 2500,
+          // Up to 5 items × (800-char rationale + 6×300-char roadmap + skill lists) can exceed
+          // 2.5k tokens; a truncated reply is unparseable JSON.
+          maxOutputTokens: 8192,
           thinkingConfig: { thinkingLevel: "minimal" },
         },
       }),
@@ -160,7 +169,13 @@ async function executeGemmaRequest(
     );
   }
 
-  const data: any = await response.json();
+  let data: any;
+  try {
+    data = await response.json();
+  } catch {
+    throw new GemmaInferenceError("Gemma API returned a non-JSON response.", "MODEL_ERROR", true);
+  }
+  const finishReason: string | undefined = data?.candidates?.[0]?.finishReason;
   const parts = data?.candidates?.[0]?.content?.parts;
   const textPart = Array.isArray(parts)
     ? parts
@@ -173,25 +188,52 @@ async function executeGemmaRequest(
     throw new GemmaInferenceError("Gemma returned empty text candidate.", "INVALID_MODEL_OUTPUT", true);
   }
 
-  // Clean JSON string from markdown fences if any
-  let cleanJson = textPart.trim();
-  if (cleanJson.startsWith("```json")) {
-    cleanJson = cleanJson.replace(/^```json\s*/, "").replace(/\s*```$/, "");
-  } else if (cleanJson.startsWith("```")) {
-    cleanJson = cleanJson.replace(/^```\s*/, "").replace(/\s*```$/, "");
+  const parsed = extractJsonObject(textPart);
+  if (parsed === undefined) {
+    const truncated = finishReason === "MAX_TOKENS" ? " (output was truncated at the token limit)" : "";
+    throw new GemmaInferenceError(
+      `Model output could not be parsed as JSON${truncated}.`,
+      "INVALID_MODEL_OUTPUT",
+      true,
+    );
   }
-
-  try {
-    return JSON.parse(cleanJson);
-  } catch {
-    throw new GemmaInferenceError("Model output could not be parsed as JSON.", "INVALID_MODEL_OUTPUT", true);
-  }
+  return parsed;
 }
 
-function validateModelOutput(
-  parsed: any,
-  candidates: GitHubCandidate[],
-): { ok: true; items: ModelRecommendationItem[] } | { ok: false; error: string } {
+/**
+ * Parses model text as JSON, tolerating markdown fences and prose around the object.
+ * Returns undefined when no JSON object can be recovered.
+ */
+export function extractJsonObject(text: string): unknown {
+  const attempts: string[] = [text.trim()];
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced) attempts.push(fenced[1]);
+
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last > first) attempts.push(text.slice(first, last + 1));
+
+  for (const candidate of attempts) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // try the next strategy
+    }
+  }
+  return undefined;
+}
+
+const ROADMAP_FALLBACK_STEPS = [
+  "Read the repository README and CONTRIBUTING guide.",
+  "Set up the project locally and run its test suite.",
+  "Comment on the issue or open a discussion before writing code.",
+  "Open a focused pull request that references the issue.",
+];
+
+type ValidationResult = { ok: true; items: ModelRecommendationItem[] } | { ok: false; error: string };
+
+function validateModelOutput(parsed: any, candidates: GitHubCandidate[]): ValidationResult {
   if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.recommendations)) {
     return { ok: false, error: "Output must contain a 'recommendations' array." };
   }
@@ -203,36 +245,37 @@ function validateModelOutput(
 
   const validItems: ModelRecommendationItem[] = [];
   const seenCandidateIds = new Set<number>();
+  const problems: string[] = [];
 
   for (let idx = 0; idx < parsed.recommendations.length; idx++) {
     if (validItems.length >= 5) break;
     const item = parsed.recommendations[idx];
     if (!item || typeof item !== "object") continue;
 
-    // Check candidate ID membership
-    const candId = Number(item.candidateId);
+    // Check candidate ID membership. Invented candidates are dropped rather than failing
+    // the whole response, so valid recommendations alongside them survive.
+    const candId = item.candidateId === null || item.candidateId === undefined ? NaN : Number(item.candidateId);
     if (!candidateMap.has(candId)) {
-      return { ok: false, error: `candidateId ${item.candidateId} was not in the provided candidates.` };
+      problems.push(`candidateId ${item.candidateId} was not in the provided candidates.`);
+      continue;
     }
     if (seenCandidateIds.has(candId)) {
       continue; // Deduplicate candidate recommendations
     }
-    seenCandidateIds.add(candId);
 
     const cand = candidateMap.get(candId)!;
 
-    // Check issue number membership
+    // Check issue number membership. The rationale and roadmap are written around the issue,
+    // so an item with an unverifiable issue is dropped as a whole.
     let issueNum: number | null = null;
     if (item.issueNumber !== null && item.issueNumber !== undefined) {
       issueNum = Number(item.issueNumber);
-      const issueExists = cand.issues.some((i) => i.number === issueNum);
-      if (!issueExists) {
-        return {
-          ok: false,
-          error: `issueNumber ${issueNum} does not belong to candidate repository ${cand.fullName}.`,
-        };
+      if (!cand.issues.some((i) => i.number === issueNum)) {
+        problems.push(`issueNumber ${item.issueNumber} does not belong to candidate repository ${cand.fullName}.`);
+        continue;
       }
     }
+    seenCandidateIds.add(candId);
 
     const fit: FitCategory = VALID_FITS.has(item.fit) ? item.fit : "good";
     const difficulty: DifficultyLevel = VALID_DIFFS.has(item.difficulty) ? item.difficulty : "intermediate";
@@ -247,8 +290,9 @@ function validateModelOutput(
           .slice(0, 6)
       : ["Fork repository", "Run tests", "Open PR"];
 
-    if (roadmap.length < 3) {
-      roadmap.push("Review open issues for further contribution opportunities.");
+    for (const step of ROADMAP_FALLBACK_STEPS) {
+      if (roadmap.length >= 3) break;
+      if (!roadmap.includes(step)) roadmap.push(step);
     }
 
     const toStringArray = (val: any): string[] =>
@@ -273,6 +317,11 @@ function validateModelOutput(
       roadmap,
       limitations: toStringArray(item.limitations),
     });
+  }
+
+  // Only ask for a repair when the model proposed items and none of them survived.
+  if (validItems.length === 0 && problems.length > 0) {
+    return { ok: false, error: problems.join(" ") };
   }
 
   return { ok: true, items: validItems };

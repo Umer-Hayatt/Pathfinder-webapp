@@ -34,11 +34,13 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
   const [interests, setInterests] = useState<string[]>(
     initialProfile?.interests || ['developer tools']
   );
+  // Optional fields: only fall back to defaults for a brand-new form. A submitted profile
+  // that omitted them (user cleared them) must stay empty when edited again.
   const [skills, setSkills] = useState<string[]>(
-    initialProfile?.skills || ['Git']
+    initialProfile ? initialProfile.skills ?? [] : ['Git']
   );
   const [gitExperience, setGitExperience] = useState<GitExperience | ''>(
-    initialProfile?.gitExperience || 'basic'
+    initialProfile ? initialProfile.gitExperience ?? '' : 'basic'
   );
   const [goal, setGoal] = useState<ContributionGoal>(
     initialProfile?.goal || 'first_contribution'
@@ -48,7 +50,24 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
   );
   const [errors, setErrors] = useState<ValidationErrors>({});
 
-  const validate = (): boolean => {
+  const languagesState = languages;
+  const interestsState = interests;
+  const skillsState = skills;
+  const contextState = context;
+
+  // Accepts just-changed values, because state updates are not visible until the next render.
+  const validate = (
+    overrides: Partial<{
+      languages: string[];
+      interests: string[];
+      skills: string[];
+      context: string;
+    }> = {}
+  ): boolean => {
+    const languages = overrides.languages ?? languagesState;
+    const interests = overrides.interests ?? interestsState;
+    const skills = overrides.skills ?? skillsState;
+    const context = overrides.context ?? contextState;
     const errs: ValidationErrors = {};
 
     if (languages.length === 0) {
@@ -146,7 +165,7 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
           tags={languages}
           onChange={(newTags) => {
             setLanguages(newTags);
-            if (errors.languages) validate();
+            if (errors.languages) validate({ languages: newTags });
           }}
           maxTags={10}
           maxTagLength={60}
@@ -169,7 +188,7 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
           tags={interests}
           onChange={(newTags) => {
             setInterests(newTags);
-            if (errors.interests) validate();
+            if (errors.interests) validate({ interests: newTags });
           }}
           maxTags={10}
           maxTagLength={60}
@@ -216,7 +235,7 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
           tags={skills}
           onChange={(newTags) => {
             setSkills(newTags);
-            if (errors.skills) validate();
+            if (errors.skills) validate({ skills: newTags });
           }}
           maxTags={10}
           maxTagLength={60}
@@ -270,7 +289,7 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
           value={context}
           onChange={(e) => {
             setContext(e.target.value);
-            if (errors.context) validate();
+            if (errors.context) validate({ context: e.target.value });
           }}
           rows={3}
           maxLength={1200}
